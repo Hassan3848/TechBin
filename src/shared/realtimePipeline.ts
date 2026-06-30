@@ -51,6 +51,7 @@ export type DisposalEvent = {
 };
 
 export type PipelineBinState = {
+  id: string;
   orgId: string;
   binCode: string;
   location?: string | null;
@@ -150,6 +151,7 @@ function mapBin(bin: BinRow, state: BinStateRow | undefined, health: BinHardware
   if (!status.lastSeen && state?.last_seen) status.lastSeen = state.last_seen;
 
   return {
+    id: bin.id,
     orgId: bin.org_id,
     binCode: bin.bin_code,
     location: bin.location,

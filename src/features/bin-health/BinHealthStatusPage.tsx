@@ -2,7 +2,15 @@ import React, { useMemo } from "react";
 import { CheckCircle, XCircle, AlertCircle, Camera, Radio, Wifi, Zap } from "lucide-react";
 import { useAuth } from "../../app/providers/AuthProvider";
 import { useSettings } from "../../app/providers/SettingsProvider";
-import { hardwareHealthRows, overallHardwareStatus, statusLabel, type HardwareHealthDisplay, type HardwareHealthStatus } from "../../shared/hardwareHealth";
+import {
+  hardwareHealthRows,
+  hasAnyDetailedHardwareHealth,
+  missingHardwareHealthComponentLabels,
+  overallHardwareStatus,
+  statusLabel,
+  type HardwareHealthDisplay,
+  type HardwareHealthStatus,
+} from "../../shared/hardwareHealth";
 import { formatPipelineTime, PipelineBinState, useRealtimePipeline } from "../../shared/realtimePipeline";
 
 interface SensorStatus {
@@ -49,7 +57,7 @@ function computeLegacyOverallStatus(bin: PipelineBinState, sensors: SensorStatus
 }
 
 function computeOverallStatus(bin: PipelineBinState, sensors: SensorStatus[]): "Healthy" | "Warning" | "Critical" | "Unknown" {
-  if (bin.hardwareHealth) return statusLabel(overallHardwareStatus(bin.hardwareHealth)) as "Healthy" | "Warning" | "Critical" | "Unknown";
+  if (hasAnyDetailedHardwareHealth(bin.hardwareHealth)) return statusLabel(overallHardwareStatus(bin.hardwareHealth)) as "Healthy" | "Warning" | "Critical" | "Unknown";
   return computeLegacyOverallStatus(bin, sensors);
 }
 
@@ -100,12 +108,15 @@ export const BinHealthStatusPage: React.FC = () => {
   const binHealth = useMemo(() => bins.map((bin) => {
     const sensors = makeSensors(bin);
     return {
+      id: bin.id,
       binId: bin.binCode,
+      orgId: bin.orgId,
       location: bin.location || bin.orgId,
       overallStatus: computeOverallStatus(bin, sensors),
       sensors,
       hardwareRows: hardwareHealthRows(bin.hardwareHealth),
-      hasDetailedHealth: Boolean(bin.hardwareHealth?.components),
+      hasDetailedHealth: hasAnyDetailedHardwareHealth(bin.hardwareHealth),
+      missingDetailedHealth: missingHardwareHealthComponentLabels(bin.hardwareHealth),
       detailedLastSeen: bin.hardwareHealth?.lastSeen || null,
     };
   }), [bins]);
@@ -139,13 +150,25 @@ export const BinHealthStatusPage: React.FC = () => {
 
       <div className="space-y-6">
         {loading ? <div className="text-gray-600">Loading bins...</div> : binHealth.length === 0 ? <div className="text-gray-600">No cloud bin state found.</div> : binHealth.map((bin) => (
-          <div key={bin.binId} className={`rounded-xl shadow-sm p-6 border-2 ${getOverallStatusColor(bin.overallStatus)}`}>
+          <div key={bin.id} className={`rounded-xl shadow-sm p-6 border-2 ${getOverallStatusColor(bin.overallStatus)}`}>
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
-              <div><div className="flex items-center gap-3 mb-2"><h2 className="text-xl text-gray-900">{bin.binId}</h2><span className={`px-3 py-1 rounded-full text-xs ${getOverallStatusBadge(bin.overallStatus)}`}>{bin.overallStatus}</span></div><p className="text-gray-600">{bin.location}</p></div>
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <h2 className="text-xl text-gray-900">{bin.binId}</h2>
+                  <span className={`px-3 py-1 rounded-full text-xs ${getOverallStatusBadge(bin.overallStatus)}`}>{bin.overallStatus}</span>
+                </div>
+                <p className="text-gray-600">{bin.location}</p>
+                <p className="text-xs text-gray-500">Org: {bin.orgId} · Record: {bin.id}</p>
+              </div>
             </div>
             {bin.hasDetailedHealth ? (
               <>
                 <p className="text-xs text-gray-500 mb-4">Detailed hardware health last received: {formatPipelineTime(bin.detailedLastSeen)}</p>
+                {bin.missingDetailedHealth.length > 0 && (
+                  <p className="text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-md p-3 mb-4">
+                    Detailed health is incomplete. Missing: {bin.missingDetailedHealth.join(", ")}
+                  </p>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                   {bin.hardwareRows.map((row) => <HardwareHealthCard key={row.key} row={row} />)}
                 </div>
