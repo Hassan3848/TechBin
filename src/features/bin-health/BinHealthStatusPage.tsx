@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { CheckCircle, XCircle, AlertCircle, Camera, Radio, Wifi, Zap } from "lucide-react";
 import { useAuth } from "../../app/providers/AuthProvider";
 import { useSettings } from "../../app/providers/SettingsProvider";
+import { hardwareHealthRows, overallHardwareStatus, statusLabel, type HardwareHealthDisplay, type HardwareHealthStatus } from "../../shared/hardwareHealth";
 import { formatPipelineTime, PipelineBinState, useRealtimePipeline } from "../../shared/realtimePipeline";
 
 interface SensorStatus {
@@ -39,12 +40,56 @@ function makeSensors(bin: PipelineBinState): SensorStatus[] {
   return sensors;
 }
 
-function computeOverallStatus(bin: PipelineBinState, sensors: SensorStatus[]): "Healthy" | "Warning" | "Critical" {
+function computeLegacyOverallStatus(bin: PipelineBinState, sensors: SensorStatus[]): "Healthy" | "Warning" | "Critical" | "Unknown" {
   if ((bin.status.state || "").toLowerCase() === "faulty") return "Critical";
   if (sensors.some((sensor) => sensor.status === "Fault")) return "Critical";
   if ((bin.status.state || "").toLowerCase() === "maintenance") return "Warning";
   if (sensors.some((sensor) => sensor.status === "Degraded")) return "Warning";
   return "Healthy";
+}
+
+function computeOverallStatus(bin: PipelineBinState, sensors: SensorStatus[]): "Healthy" | "Warning" | "Critical" | "Unknown" {
+  if (bin.hardwareHealth) return statusLabel(overallHardwareStatus(bin.hardwareHealth)) as "Healthy" | "Warning" | "Critical" | "Unknown";
+  return computeLegacyOverallStatus(bin, sensors);
+}
+
+function statusClasses(status: HardwareHealthStatus) {
+  switch (status) {
+    case "healthy":
+      return { badge: "bg-green-100 text-green-800 border-green-200", icon: "text-green-600", border: "border-green-200" };
+    case "warning":
+      return { badge: "bg-yellow-100 text-yellow-800 border-yellow-200", icon: "text-yellow-600", border: "border-yellow-200" };
+    case "critical":
+      return { badge: "bg-red-100 text-red-800 border-red-200", icon: "text-red-600", border: "border-red-200" };
+    case "disabled":
+    case "not_installed":
+      return { badge: "bg-slate-100 text-slate-700 border-slate-200", icon: "text-slate-500", border: "border-slate-200" };
+    default:
+      return { badge: "bg-gray-100 text-gray-700 border-gray-200", icon: "text-gray-500", border: "border-gray-200" };
+  }
+}
+
+function HardwareHealthCard({ row }: { row: HardwareHealthDisplay }) {
+  const IconComponent = row.icon;
+  const classes = statusClasses(row.status);
+
+  return (
+    <div className={`bg-white rounded-lg p-4 border ${classes.border}`}>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <IconComponent className={`w-5 h-5 flex-shrink-0 ${classes.icon}`} />
+          <span className="text-sm text-gray-900 truncate">{row.label}</span>
+        </div>
+        <span className={`inline-flex border px-2 py-1 rounded-full text-xs whitespace-nowrap ${classes.badge}`}>{row.statusLabel}</span>
+      </div>
+      <div className="space-y-1 text-xs">
+        {row.faultCode && <p className="font-medium text-gray-800">{row.faultCode}</p>}
+        <p className="text-gray-600">{row.message}</p>
+        <p className="text-gray-500">Checked: {formatPipelineTime(row.lastCheckedAt)}</p>
+        <p className="text-gray-500">Last success: {formatPipelineTime(row.lastSuccessAt)}</p>
+      </div>
+    </div>
+  );
 }
 
 export const BinHealthStatusPage: React.FC = () => {
@@ -59,6 +104,9 @@ export const BinHealthStatusPage: React.FC = () => {
       location: bin.location || bin.orgId,
       overallStatus: computeOverallStatus(bin, sensors),
       sensors,
+      hardwareRows: hardwareHealthRows(bin.hardwareHealth),
+      hasDetailedHealth: Boolean(bin.hardwareHealth?.components),
+      detailedLastSeen: bin.hardwareHealth?.lastSeen || null,
     };
   }), [bins]);
 
@@ -67,8 +115,8 @@ export const BinHealthStatusPage: React.FC = () => {
   const criticalCount = binHealth.filter((bin) => bin.overallStatus === "Critical").length;
 
   const getStatusIcon = (status: string) => status === "OK" ? <CheckCircle className="w-5 h-5 text-green-600" /> : status === "Fault" ? <XCircle className="w-5 h-5 text-red-600" /> : <AlertCircle className="w-5 h-5 text-yellow-600" />;
-  const getOverallStatusColor = (status: string) => status === "Healthy" ? "border-green-200 bg-gradient-to-br from-green-50 to-white" : status === "Warning" ? "border-yellow-200 bg-gradient-to-br from-yellow-50 to-white" : "border-red-200 bg-gradient-to-br from-red-50 to-white";
-  const getOverallStatusBadge = (status: string) => status === "Healthy" ? "bg-green-100 text-green-800" : status === "Warning" ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800";
+  const getOverallStatusColor = (status: string) => status === "Healthy" ? "border-green-200 bg-gradient-to-br from-green-50 to-white" : status === "Warning" ? "border-yellow-200 bg-gradient-to-br from-yellow-50 to-white" : status === "Critical" ? "border-red-200 bg-gradient-to-br from-red-50 to-white" : "border-gray-200 bg-gradient-to-br from-gray-50 to-white";
+  const getOverallStatusBadge = (status: string) => status === "Healthy" ? "bg-green-100 text-green-800" : status === "Warning" ? "bg-yellow-100 text-yellow-800" : status === "Critical" ? "bg-red-100 text-red-800" : "bg-gray-100 text-gray-700";
 
   if (!user) {
     return <div className="bg-white rounded-xl border border-gray-100 p-6"><h1 className="text-xl text-gray-900 mb-2">Bin Health Status</h1><p className="text-gray-600">Please login to view bin health.</p></div>;
@@ -95,12 +143,21 @@ export const BinHealthStatusPage: React.FC = () => {
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
               <div><div className="flex items-center gap-3 mb-2"><h2 className="text-xl text-gray-900">{bin.binId}</h2><span className={`px-3 py-1 rounded-full text-xs ${getOverallStatusBadge(bin.overallStatus)}`}>{bin.overallStatus}</span></div><p className="text-gray-600">{bin.location}</p></div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-              {bin.sensors.map((sensor) => {
+            {bin.hasDetailedHealth ? (
+              <>
+                <p className="text-xs text-gray-500 mb-4">Detailed hardware health last received: {formatPipelineTime(bin.detailedLastSeen)}</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                  {bin.hardwareRows.map((row) => <HardwareHealthCard key={row.key} row={row} />)}
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                {bin.sensors.map((sensor) => {
                 const IconComponent = sensor.icon;
                 return <div key={sensor.name} className="bg-white rounded-lg p-4 border border-gray-200"><div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2"><IconComponent className="w-5 h-5 text-gray-600" /><span className="text-sm text-gray-900">{sensor.name}</span></div>{getStatusIcon(sensor.status)}</div><div className="space-y-1"><p className="text-xs text-gray-500">{sensor.details}</p><p className="text-xs text-gray-400">{sensor.lastChecked}</p></div></div>;
-              })}
-            </div>
+                })}
+              </div>
+            )}
           </div>
         ))}
       </div>

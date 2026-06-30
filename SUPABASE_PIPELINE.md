@@ -15,7 +15,7 @@ Edge Functions need these secrets:
 
 ```bash
 SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_SERVICE_ROLE_KEY (set this only in Supabase Function Secrets)
+SUPABASE_SERVICE_ROLE_KEY=replace-with-service-role-key
 TECHBIN_ROOT_ADMIN_EMAIL=admin@techbin.com
 TECHBIN_ROOT_ORG_ID=techbin
 ```

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase, type BinRow } from "./supabase";
+import { parseHardwareHealthSnapshot, type BinHardwareHealth, type HardwareHealthOverallStatus } from "./hardwareHealth";
 import type { User } from "../app/providers/AuthProvider";
 
 export type PipelineStatus = {
@@ -57,6 +58,7 @@ export type PipelineBinState = {
   sensors: PipelineSensors;
   statistics: PipelineStatistics;
   faults: Record<string, boolean>;
+  hardwareHealth: BinHardwareHealth | null;
   latestEvent?: DisposalEvent | null;
   events: DisposalEvent[];
 };
@@ -76,6 +78,16 @@ type BinStateRow = {
   statistics: Record<string, unknown> | null;
   faults: Record<string, unknown> | null;
   latest_event: Record<string, unknown> | null;
+  last_seen: string | null;
+};
+
+type BinHardwareHealthRow = {
+  bin_id: string;
+  hardware_health: Record<string, unknown> | null;
+  overall_status: HardwareHealthOverallStatus | null;
+  received_at: string | null;
+  device_last_checked_at: string | null;
+  device_last_success_at: string | null;
   last_seen: string | null;
 };
 
@@ -121,7 +133,19 @@ function mapEvent(row: BinEventRow): DisposalEvent {
   };
 }
 
-function mapBin(bin: BinRow, state: BinStateRow | undefined, events: BinEventRow[]): PipelineBinState {
+function mapHardwareHealth(row: BinHardwareHealthRow | undefined): BinHardwareHealth | null {
+  if (!row) return null;
+  return {
+    components: parseHardwareHealthSnapshot(row.hardware_health),
+    overallStatus: row.overall_status || "unknown",
+    receivedAt: row.received_at,
+    deviceLastCheckedAt: row.device_last_checked_at,
+    deviceLastSuccessAt: row.device_last_success_at,
+    lastSeen: row.last_seen,
+  };
+}
+
+function mapBin(bin: BinRow, state: BinStateRow | undefined, health: BinHardwareHealthRow | undefined, events: BinEventRow[]): PipelineBinState {
   const status = toObject(state?.status) as PipelineStatus;
   if (!status.lastSeen && state?.last_seen) status.lastSeen = state.last_seen;
 
@@ -133,6 +157,7 @@ function mapBin(bin: BinRow, state: BinStateRow | undefined, events: BinEventRow
     sensors: toObject(state?.sensors) as PipelineSensors,
     statistics: toObject(state?.statistics) as PipelineStatistics,
     faults: toFaults(state?.faults),
+    hardwareHealth: mapHardwareHealth(health),
     latestEvent: state?.latest_event ? (toObject(state.latest_event) as DisposalEvent) : null,
     events: events.map(mapEvent),
   };
@@ -178,8 +203,13 @@ export function useRealtimePipeline(user: User | null, refreshRateSeconds = "10"
         return;
       }
 
-      const [{ data: statesData, error: statesError }, { data: eventsData, error: eventsError }] = await Promise.all([
+      const [
+        { data: statesData, error: statesError },
+        { data: healthData, error: healthError },
+        { data: eventsData, error: eventsError },
+      ] = await Promise.all([
         supabase.from("bin_states").select("*").in("bin_id", binIds),
+        supabase.from("bin_hardware_health").select("*").in("bin_id", binIds),
         supabase
           .from("bin_events")
           .select("*")
@@ -188,12 +218,13 @@ export function useRealtimePipeline(user: User | null, refreshRateSeconds = "10"
           .limit(100),
       ]);
 
-      if (statesError || eventsError) {
-        if (active) setState({ bins: [], loading: false, error: statesError?.message || eventsError?.message || "Pipeline load failed." });
+      if (statesError || healthError || eventsError) {
+        if (active) setState({ bins: [], loading: false, error: statesError?.message || healthError?.message || eventsError?.message || "Pipeline load failed." });
         return;
       }
 
       const stateByBin = new Map(((statesData || []) as BinStateRow[]).map((row) => [row.bin_id, row]));
+      const healthByBin = new Map(((healthData || []) as BinHardwareHealthRow[]).map((row) => [row.bin_id, row]));
       const eventsByBin = ((eventsData || []) as BinEventRow[]).reduce<Map<string, BinEventRow[]>>((acc, row) => {
         acc.set(row.bin_id, [...(acc.get(row.bin_id) || []), row]);
         return acc;
@@ -201,7 +232,7 @@ export function useRealtimePipeline(user: User | null, refreshRateSeconds = "10"
 
       if (active) {
         setState({
-          bins: bins.map((bin) => mapBin(bin, stateByBin.get(bin.id), eventsByBin.get(bin.id) || [])),
+          bins: bins.map((bin) => mapBin(bin, stateByBin.get(bin.id), healthByBin.get(bin.id), eventsByBin.get(bin.id) || [])),
           loading: false,
           error: null,
         });
@@ -218,6 +249,7 @@ export function useRealtimePipeline(user: User | null, refreshRateSeconds = "10"
       .channel(`pipeline:${user.superAdmin ? "all" : user.orgId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "bins" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "bin_states" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "bin_hardware_health" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "bin_events" }, () => load())
       .subscribe();
 

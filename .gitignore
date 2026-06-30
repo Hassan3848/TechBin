@@ -10,9 +10,10 @@ build/
 firebase-debug.log
 firestore-debug.log
 
-functions-backend/node_modules/
-functions-backend/lib/
-functions-backend/.env
+backend/functions/node_modules/
+backend/functions/lib/
+backend/functions/.env
+supabase/.temp/
 
 .DS_Store
 .vscode/

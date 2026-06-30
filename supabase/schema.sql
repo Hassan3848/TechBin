@@ -72,6 +72,19 @@ create table if not exists public.bin_events (
   payload jsonb not null default '{}'::jsonb
 );
 
+create table if not exists public.bin_hardware_health (
+  bin_id text primary key references public.bins(id) on delete cascade,
+  org_id text not null,
+  bin_code text not null,
+  hardware_health jsonb not null,
+  overall_status text not null default 'unknown' check (overall_status in ('healthy', 'warning', 'critical', 'unknown')),
+  received_at timestamptz not null default now(),
+  device_last_checked_at timestamptz,
+  device_last_success_at timestamptz,
+  last_seen timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.pi_devices (
   id uuid primary key default gen_random_uuid(),
   bin_id text not null references public.bins(id) on delete cascade,
@@ -89,6 +102,7 @@ alter table public.user_settings enable row level security;
 alter table public.bins enable row level security;
 alter table public.bin_states enable row level security;
 alter table public.bin_events enable row level security;
+alter table public.bin_hardware_health enable row level security;
 alter table public.pi_devices enable row level security;
 
 create or replace function public.current_profile()
@@ -196,6 +210,14 @@ using (
   or org_id = (select org_id from public.current_profile())
 );
 
+create policy "bin hardware health scoped read"
+on public.bin_hardware_health for select
+to authenticated
+using (
+  public.current_is_super_admin()
+  or org_id = (select org_id from public.current_profile())
+);
+
 create policy "pi devices super admin read"
 on public.pi_devices for select
 to authenticated
@@ -205,7 +227,9 @@ create index if not exists profiles_org_created_idx on public.profiles(org_id, c
 create index if not exists bins_org_created_idx on public.bins(org_id, created_at desc);
 create index if not exists bin_events_bin_timestamp_idx on public.bin_events(bin_id, timestamp desc);
 create unique index if not exists bin_events_bin_event_id_unique on public.bin_events(bin_id, event_id);
+create index if not exists bin_hardware_health_org_updated_idx on public.bin_hardware_health(org_id, updated_at desc);
 
 alter publication supabase_realtime add table public.bins;
 alter publication supabase_realtime add table public.bin_states;
 alter publication supabase_realtime add table public.bin_events;
+alter publication supabase_realtime add table public.bin_hardware_health;
