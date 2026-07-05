@@ -10,6 +10,7 @@ import {
   Users,
   Settings,
   HardDrive,
+  Mail,
   LogOut,
   Menu,
   X,
@@ -63,6 +64,11 @@ export const DashboardLayout: React.FC = () => {
       name: isSuperAdmin ? "Bin Registry" : "Your Bins",
       path: "/dashboard/bins",
       icon: Trash2,
+    },
+    {
+      name: isAdmin ? "Messages" : "Announcements",
+      path: "/dashboard/messages",
+      icon: Mail,
     },
 
     ...(isAdmin

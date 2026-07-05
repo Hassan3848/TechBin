@@ -13,6 +13,7 @@ import { BinHealthStatusPage } from '../features/bin-health/BinHealthStatusPage'
 import { UserManagementPage } from '../features/users/UserManagementPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
 import { PiDeviceManagementPage } from "../features/pi-devices/PiDeviceManagementPage";
+import { MessagesPage } from "../features/messages/MessagesPage";
 import BinRegistryPage from "../features/bins/BinRegistryPage";
 import { featureFlags } from "../shared/features";
 
@@ -39,6 +40,7 @@ export default function App() {
               <Route path="monitoring" element={<RealTimeMonitoringPage />} />
               <Route path="faults" element={<FaultDetectionPage />} />
               <Route path="health" element={<BinHealthStatusPage />} />
+              <Route path="messages" element={<MessagesPage />} />
 
               {/* ✅ Bins: allow ALL signed-in users (Viewer can view, Admin can edit, SuperAdmin can create/delete) */}
               <Route

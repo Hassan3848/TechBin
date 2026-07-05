@@ -1,6 +1,16 @@
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
 import { normalizeOrgId, requireAdmin, requireCallerProfile } from "../_shared/admin.ts";
 
+function emailDomain(email: string) {
+  const at = email.lastIndexOf("@");
+  if (at <= 0 || at === email.length - 1) return "";
+  return email.slice(at + 1).toLowerCase();
+}
+
+function allowedOrgDomain(orgId: string) {
+  return `${normalizeOrgId(orgId)}.com`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed." }, 405);
@@ -17,7 +27,20 @@ Deno.serve(async (req) => {
     const orgId = profile.super_admin ? normalizeOrgId(body.orgId, profile.org_id) : profile.org_id;
 
     if (!email) return jsonResponse({ error: "Email is required." }, 400);
+    if (!emailDomain(email)) return jsonResponse({ error: "A valid email address is required." }, 400);
     if (password.length < 6) return jsonResponse({ error: "Password must be at least 6 characters." }, 400);
+    if (!profile.super_admin && requestedRole !== "Viewer") {
+      return jsonResponse({ error: "Org Admins can create Viewer users only." }, 403);
+    }
+    if (!profile.super_admin) {
+      const allowedDomain = allowedOrgDomain(profile.org_id);
+      if (emailDomain(email) !== allowedDomain) {
+        return jsonResponse(
+          { error: `Org Admins can create users only with @${allowedDomain} email addresses.` },
+          403
+        );
+      }
+    }
 
     const { data: created, error: createError } = await client.auth.admin.createUser({
       email,

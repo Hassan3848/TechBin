@@ -30,10 +30,23 @@ function mapProfile(row: ProfileRow): { id: string } & UserDoc {
   };
 }
 
+function getEmailDomain(email: string) {
+  const normalized = email.trim().toLowerCase();
+  const at = normalized.lastIndexOf("@");
+  if (at <= 0 || at === normalized.length - 1) return "";
+  return normalized.slice(at + 1);
+}
+
+function getOrgEmailDomain(orgId?: string) {
+  const normalized = (orgId || "techbin").trim().toLowerCase();
+  return `${normalized || "techbin"}.com`;
+}
+
 export const UserManagementPage: React.FC = () => {
   const { user } = useAuth();
   const isAdmin = user?.role === "Admin";
   const isSuperAdmin = user?.superAdmin === true;
+  const orgEmailDomain = getOrgEmailDomain(user?.orgId);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -93,6 +106,9 @@ export const UserManagementPage: React.FC = () => {
 
     if (!email) return alert("Email is required.");
     if (password.length < 6) return alert("Password must be at least 6 characters.");
+    if (!isSuperAdmin && getEmailDomain(email) !== orgEmailDomain) {
+      return alert(`Org Admins can create viewers only with @${orgEmailDomain} email addresses.`);
+    }
 
     setBusy(true);
     try {
@@ -284,8 +300,13 @@ export const UserManagementPage: React.FC = () => {
                   value={newEmail}
                   onChange={(e) => setNewEmail(e.target.value)}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  placeholder="user@techbin.com"
+                  placeholder={isSuperAdmin ? "user@techbin.com" : `viewer@${orgEmailDomain}`}
                 />
+                {!isSuperAdmin && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Org Admins can create Viewer accounts only for @{orgEmailDomain}.
+                  </p>
+                )}
               </div>
 
               {isSuperAdmin && (
@@ -308,11 +329,15 @@ export const UserManagementPage: React.FC = () => {
                 <select
                   value={newRole}
                   onChange={(e) => setNewRole(e.target.value === "Admin" ? "Admin" : "Viewer")}
+                  disabled={!isSuperAdmin}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 >
                   <option value="Viewer">Viewer</option>
                   {isSuperAdmin && <option value="Admin">Admin</option>}
                 </select>
+                {!isSuperAdmin && (
+                  <p className="text-xs text-gray-500 mt-1">Org Admins can create Viewer users only.</p>
+                )}
               </div>
 
               <div>
