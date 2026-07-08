@@ -22,8 +22,19 @@ from typing import Any, Literal
 
 from app.config import settings
 from app.logger import get_logger
-from app.ml.effnetv2 import EfficientNetV2CameraClassifier, RealPredictionResult
+from app.ml.effnetv2 import (
+    REAL_MODEL_CATEGORIES,
+    EfficientNetV2CameraClassifier,
+    RealPredictionResult,
+)
 from app.sensors.direct_pi_stack import DirectPiHardwareStack, build_direct_pi_hardware_stack
+from app.sensors.health_supervisor import HardwareHealthSupervisor
+from app.sensors.metal_sensor import (
+    GpioZeroMetalSensorBackend,
+    MetalSensor,
+    build_metal_sensor_from_pin_config,
+)
+from app.sensors.pin_map import PIN_MAP
 from app.telemetry.supabase import (
     build_bin_state_payload,
     build_faults_payload,
@@ -36,9 +47,13 @@ from app.telemetry.supabase import (
 from app.telemetry.totals import LocalTotalsStore
 from app.telemetry.uploader import TelemetryUploader, UploadResult
 from app.utils.event_logger import save_event_log
+from app.voice_feedback import VoiceFeedback
 
 
 logger = get_logger(__name__)
+
+
+METAL_OVERRIDE_CATEGORY = "metal"
 
 
 TelemetryMode = Literal["none", "queue", "upload_or_queue"]
@@ -77,6 +92,7 @@ class RealDevicePipelineResult:
     message: str
     eventId: str | None
     prediction: dict[str, Any] | None
+    metalSensor: dict[str, Any] | None
     sideDetection: dict[str, Any] | None
     capacity: dict[str, Any] | None
     totals: dict[str, int] | None
@@ -104,6 +120,22 @@ def _to_dict(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return value
     return {"value": str(value)}
+
+
+def _resolve_effective_category(
+    *,
+    original_category: str,
+    metal_detected: bool | None,
+    metal_override_enabled: bool,
+) -> tuple[str, bool]:
+    if metal_override_enabled and metal_detected is True:
+        if METAL_OVERRIDE_CATEGORY not in REAL_MODEL_CATEGORIES:
+            raise RealDevicePipelineError(
+                f"Metal override category is not supported: {METAL_OVERRIDE_CATEGORY}"
+            )
+        return METAL_OVERRIDE_CATEGORY, original_category != METAL_OVERRIDE_CATEGORY
+
+    return original_category, False
 
 
 def _build_camera():
@@ -136,12 +168,18 @@ class RealDeviceDisposalPipeline:
         classifier: EfficientNetV2CameraClassifier | Any | None = None,
         totals_store: LocalTotalsStore | None = None,
         telemetry_uploader: TelemetryUploader | None = None,
+        voice_feedback: VoiceFeedback | Any | None = None,
+        health_supervisor: HardwareHealthSupervisor | None = None,
+        metal_sensor: MetalSensor | Any | None = None,
         config: RealDevicePipelineConfig | None = None,
     ) -> None:
         self.hardware_stack = hardware_stack
         self.classifier = classifier
+        self.metal_sensor = metal_sensor
         self.totals_store = totals_store or LocalTotalsStore()
         self.telemetry_uploader = telemetry_uploader
+        self.voice_feedback = voice_feedback or VoiceFeedback()
+        self.health_supervisor = health_supervisor or HardwareHealthSupervisor()
         self.config = config or RealDevicePipelineConfig()
 
     def _get_hardware_stack(self):
@@ -156,6 +194,59 @@ class RealDeviceDisposalPipeline:
 
         return self.classifier
 
+    def _get_metal_sensor(self):
+        if self.metal_sensor is None:
+            pin_config = PIN_MAP.metal_sensor
+            logger.info(
+                "Metal sensor initialized | signal_gpio=%s | enabled=%s | active_low=%s",
+                pin_config.signal_gpio,
+                pin_config.enabled,
+                pin_config.active_low,
+            )
+            self.metal_sensor = build_metal_sensor_from_pin_config(
+                pin_config,
+                backend=GpioZeroMetalSensorBackend(),
+            )
+
+        return self.metal_sensor
+
+    def _read_metal_sensor(self) -> tuple[dict[str, Any] | None, bool | None]:
+        try:
+            reading = self._get_metal_sensor().read_debounced()
+        except Exception as exc:
+            logger.warning("Metal sensor read failed before event decision: %s", exc)
+            return None, None
+
+        reading_data = reading.to_dict() if hasattr(reading, "to_dict") else reading
+        if not isinstance(reading_data, dict):
+            logger.warning("Metal sensor returned unsupported reading: %s", reading_data)
+            return {"value": str(reading_data)}, None
+
+        metal_detected = (
+            bool(reading_data.get("metalDetected"))
+            if reading_data.get("valid") and reading_data.get("metalDetected") is not None
+            else None
+        )
+
+        if metal_detected is None:
+            logger.warning(
+                "Metal sensor reading invalid | faultCode=%s | reading=%s",
+                reading_data.get("faultCode"),
+                reading_data,
+            )
+        else:
+            logger.info(
+                "Metal sensor reading | valid=%s | metalDetected=%s | rawValues=%s | activeLow=%s | faultCode=%s",
+                reading_data.get("valid"),
+                reading_data.get("metalDetected"),
+                reading_data.get("rawValues"),
+                reading_data.get("activeLow"),
+                reading_data.get("faultCode"),
+            )
+
+        logger.info("Metal sensor evidence passed into real-device flow | metal_detected=%s", metal_detected)
+        return reading_data, metal_detected
+
     def _get_uploader(self) -> TelemetryUploader:
         if self.telemetry_uploader is None:
             self.telemetry_uploader = TelemetryUploader(
@@ -168,6 +259,12 @@ class RealDeviceDisposalPipeline:
         while True:
             session_result = stack.session_detector.update()
             session_data = session_result.to_dict()
+            front_reading = session_data.get("ultrasonicReading")
+            if front_reading is not None:
+                self.health_supervisor.observe_ultrasonic(
+                    "front_ultrasonic",
+                    front_reading,
+                )
 
             if session_data.get("sessionStarted") or session_data.get("sessionActive"):
                 return session_data
@@ -231,11 +328,47 @@ class RealDeviceDisposalPipeline:
             f"Unsupported telemetry_mode: {self.config.telemetry_mode}"
         )
 
+    def _observe_side_health(self, side_data: dict[str, Any] | None) -> None:
+        if not isinstance(side_data, dict):
+            return
+
+        left_evidence = side_data.get("leftEvidence") or {}
+        right_evidence = side_data.get("rightEvidence") or {}
+
+        for component_id, evidence in (
+            ("left_ultrasonic", left_evidence),
+            ("right_ultrasonic", right_evidence),
+        ):
+            if not isinstance(evidence, dict):
+                continue
+            current = evidence.get("currentReading") or evidence.get("baselineReading")
+            if current is not None:
+                self.health_supervisor.observe_ultrasonic(component_id, current)
+
+    def _observe_capacity_health(self, capacity_data: dict[str, Any] | None) -> None:
+        if not isinstance(capacity_data, dict):
+            return
+
+        for component_id, side_key in (
+            ("left_ultrasonic", "left"),
+            ("right_ultrasonic", "right"),
+        ):
+            side_data = capacity_data.get(side_key) or {}
+            if not isinstance(side_data, dict):
+                continue
+            reading = side_data.get("ultrasonicReading")
+            if reading is not None:
+                self.health_supervisor.observe_ultrasonic(component_id, reading)
+
     def process_once(self, camera: Any | None = None) -> RealDevicePipelineResult:
         stack = None
         owns_camera = camera is None
         active_camera = camera
         prediction: RealPredictionResult | None = None
+        metal_reading: dict[str, Any] | None = None
+        metal_detected: bool | None = None
+        effective_category: str | None = None
+        metal_override_applied = False
         side_result = None
         capacity_result = None
 
@@ -253,6 +386,7 @@ class RealDeviceDisposalPipeline:
                 active_camera = _build_camera()
 
             prediction = classifier.capture_average_prediction(active_camera)
+            self.health_supervisor.observe_camera_success()
 
             if not prediction.accepted:
                 return RealDevicePipelineResult(
@@ -262,6 +396,7 @@ class RealDeviceDisposalPipeline:
                     message=prediction.rejectionReason or "prediction_rejected",
                     eventId=None,
                     prediction=prediction.to_dict(),
+                    metalSensor=None,
                     sideDetection=None,
                     capacity=None,
                     totals=None,
@@ -272,8 +407,25 @@ class RealDeviceDisposalPipeline:
                     config=self.config.to_dict(),
                 )
 
+            metal_reading, metal_detected = self._read_metal_sensor()
+            metal_override_enabled = settings.device.metal_override_enabled
+            effective_category, metal_override_applied = _resolve_effective_category(
+                original_category=prediction.category,
+                metal_detected=metal_detected,
+                metal_override_enabled=metal_override_enabled,
+            )
+            logger.info(
+                "Final category decision | originalCameraCategory=%s | metalDetected=%s | metalOverrideEnabled=%s | metalOverrideApplied=%s | effectiveFinalCategory=%s",
+                prediction.category,
+                metal_detected,
+                metal_override_enabled,
+                metal_override_applied,
+                effective_category,
+            )
+
             side_result = self._confirm_side(stack)
             side_data = _to_dict(side_result)
+            self._observe_side_health(side_data)
 
             if (
                 side_data is None
@@ -287,6 +439,7 @@ class RealDeviceDisposalPipeline:
                     message="Physical disposal side was not confirmed.",
                     eventId=None,
                     prediction=prediction.to_dict(),
+                    metalSensor=metal_reading,
                     sideDetection=side_data,
                     capacity=None,
                     totals=None,
@@ -299,6 +452,7 @@ class RealDeviceDisposalPipeline:
 
             capacity_result = stack.capacity_monitor.check_all()
             capacity_data = _to_dict(capacity_result)
+            self._observe_capacity_health(capacity_data)
             sensor_payload = extract_capacity_sensor_payload(capacity_data)
 
             event_id = new_event_id(settings.supabase.bin_code)
@@ -306,18 +460,29 @@ class RealDeviceDisposalPipeline:
 
             latest_event = build_latest_event(
                 event_id=event_id,
-                category=prediction.category,
+                category=effective_category,
                 disposed_side=disposed_side,
                 confidence=prediction.confidence,
                 model_version=prediction.modelVersion,
-                classification_source=prediction.classificationSource,
-                label=prediction.label,
+                classification_source=(
+                    "metal_sensor"
+                    if metal_override_applied
+                    else prediction.classificationSource
+                ),
+                label=METAL_OVERRIDE_CATEGORY if metal_override_applied else prediction.label,
                 placement_confirmed=True,
                 image_url=None,
             )
+            logger.info(
+                "Final routing decision | effectiveFinalCategory=%s | expectedSide=%s | disposedSide=%s | correct=%s",
+                latest_event["category"],
+                latest_event["expectedSide"],
+                latest_event["disposedSide"],
+                latest_event["correct"],
+            )
 
             totals = self.totals_store.update_for_confirmed_event(
-                category=prediction.category,
+                category=effective_category,
                 correct=bool(latest_event["correct"]),
             )
 
@@ -332,6 +497,7 @@ class RealDeviceDisposalPipeline:
                 latest_event=latest_event,
                 status_state="normal",
                 status_message="Running",
+                detailed_health=self.health_supervisor.to_payload(),
             )
 
             log_path = save_event_log(
@@ -340,6 +506,12 @@ class RealDeviceDisposalPipeline:
             )
 
             telemetry_result = self._handle_telemetry(payload, event_id=event_id)
+            if telemetry_result is not None and self.config.telemetry_mode == "upload_or_queue":
+                self.health_supervisor.observe_network_result(
+                    ok=telemetry_result.status == "sent",
+                    message=telemetry_result.message,
+                )
+            self.voice_feedback.play_after_confirmation(latest_event)
 
             return RealDevicePipelineResult(
                 timestamp=_now_iso(),
@@ -348,6 +520,7 @@ class RealDeviceDisposalPipeline:
                 message="Confirmed disposal event processed.",
                 eventId=event_id,
                 prediction=prediction.to_dict(),
+                metalSensor=metal_reading,
                 sideDetection=side_data,
                 capacity=capacity_data,
                 totals=totals,
@@ -364,6 +537,9 @@ class RealDeviceDisposalPipeline:
 
         except Exception as exc:
             logger.exception("Real-device pipeline failed")
+            message = str(exc)
+            if "camera" in message.lower() or "picamera" in message.lower():
+                self.health_supervisor.observe_camera_exception(exc)
             return RealDevicePipelineResult(
                 timestamp=_now_iso(),
                 status="fault",
@@ -371,6 +547,7 @@ class RealDeviceDisposalPipeline:
                 message=str(exc),
                 eventId=None,
                 prediction=prediction.to_dict() if prediction is not None else None,
+                metalSensor=metal_reading,
                 sideDetection=_to_dict(side_result),
                 capacity=_to_dict(capacity_result),
                 totals=None,

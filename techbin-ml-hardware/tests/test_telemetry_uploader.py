@@ -9,6 +9,8 @@ Run from project root:
 
 from __future__ import annotations
 
+from datetime import datetime
+import json
 import shutil
 from pathlib import Path
 from pprint import pprint
@@ -34,6 +36,42 @@ def build_sample_payload() -> dict:
         disposal_side="right",
         source="telemetry_uploader_test",
     )
+
+
+def test_pending_retry_repairs_hardware_health_last_checked_at() -> None:
+    reset_test_queue()
+
+    uploader = TelemetryUploader(
+        transport=DryRunTransport(),
+        queue_root=TEST_QUEUE_ROOT,
+        max_retries=3,
+    )
+    event_id = "test-event-1"
+    payload = {
+        "eventType": "bin_state",
+        "latestEvent": {"eventId": event_id},
+        "hardwareHealth": {
+            "telemetryQueue": {
+                "componentId": "telemetry_queue",
+                "lastCheckedAt": None,
+                "lastSuccessAt": None,
+            }
+        },
+    }
+
+    queue_path = uploader.enqueue(payload, prefix="supabase_event", payload_id=event_id)
+    result = uploader.upload_pending_file(queue_path)
+
+    assert result.status == "sent"
+    assert result.payload_id == event_id
+
+    sent_files = list((TEST_QUEUE_ROOT / "sent").glob("*.json"))
+    assert len(sent_files) == 1
+    sent = json.loads(sent_files[0].read_text(encoding="utf-8"))
+    assert sent["payloadId"] == event_id
+    assert sent["payload"]["latestEvent"]["eventId"] == event_id
+    datetime.fromisoformat(sent["payload"]["hardwareHealth"]["telemetryQueue"]["lastCheckedAt"])
+    assert sent["payload"]["hardwareHealth"]["telemetryQueue"]["lastSuccessAt"] is None
 
 
 def main() -> None:
@@ -84,6 +122,9 @@ def main() -> None:
     assert len(pending_files) == 0
 
     print("PASS: upload pending")
+
+    test_pending_retry_repairs_hardware_health_last_checked_at()
+    print("PASS: pending retry repairs hardware health timestamps")
 
     print()
     print("All telemetry uploader tests passed.")

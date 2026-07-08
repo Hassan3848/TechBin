@@ -357,6 +357,15 @@ class UltrasonicDistanceSensor:
             )
 
         except Exception as exc:
+            message = str(exc)
+            normalized_message = message.lower().replace("-", "_").replace(" ", "_")
+            fault_code = (
+                "echo_timeout"
+                if "echo_timeout" in normalized_message
+                or "ultrasonic_echo_timeout" in normalized_message
+                else "ultrasonic_read_failed"
+            )
+
             logger.warning(
                 "Ultrasonic read failed | sensor=%s | error=%s",
                 self.config.name,
@@ -370,8 +379,8 @@ class UltrasonicDistanceSensor:
                 distanceCm=None,
                 rawReadingsCm=[],
                 valid=False,
-                faultCode="ultrasonic_read_failed",
-                message=str(exc),
+                faultCode=fault_code,
+                message=message,
                 triggerGpio=self.config.trigger_gpio,
                 echoGpio=self.config.echo_gpio,
             )

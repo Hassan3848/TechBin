@@ -30,6 +30,7 @@ import os
 import shutil
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
@@ -131,6 +132,26 @@ class HttpJsonTransport:
         self.timeout_seconds = timeout_seconds
         self.headers = headers or {}
 
+    @staticmethod
+    def _sanitize_response_body(response_body: str | None) -> str:
+        if response_body is None:
+            return ""
+
+        collapsed = " ".join(response_body.replace("\x00", "").split())
+        return collapsed[:300]
+
+    def _log_http_non_success(
+        self,
+        *,
+        status_code: int | None,
+        response_body: str | None,
+    ) -> None:
+        logger.warning(
+            "HTTP telemetry upload returned non-2xx | status=%s | response_body=%r",
+            status_code,
+            self._sanitize_response_body(response_body),
+        )
+
     def send(self, payload: dict[str, Any]) -> TransportResponse:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
@@ -154,6 +175,12 @@ class HttpJsonTransport:
                 response_body = response.read().decode("utf-8", errors="replace")
                 status_code = int(response.status)
 
+            if not 200 <= status_code < 300:
+                self._log_http_non_success(
+                    status_code=status_code,
+                    response_body=response_body,
+                )
+
             return TransportResponse(
                 ok=200 <= status_code < 300,
                 status_code=status_code,
@@ -163,6 +190,10 @@ class HttpJsonTransport:
 
         except urllib.error.HTTPError as exc:
             response_body = exc.read().decode("utf-8", errors="replace")
+            self._log_http_non_success(
+                status_code=exc.code,
+                response_body=response_body,
+            )
 
             return TransportResponse(
                 ok=False,
@@ -190,6 +221,18 @@ class HttpJsonTransport:
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="microseconds")
+
+
+def _is_valid_iso_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or value.strip() == "":
+        return False
+
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+
+    return True
 
 
 def _timestamp_for_filename() -> str:
@@ -234,7 +277,32 @@ def _ensure_payload_dict(payload: Any) -> dict[str, Any]:
     if not normalized:
         raise TelemetryUploadError("payload cannot be empty")
 
+    return _normalize_payload_for_upload(normalized)
+
+
+def _normalize_payload_for_upload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(payload)
+    _normalize_hardware_health(normalized)
     return normalized
+
+
+def _normalize_hardware_health(payload: dict[str, Any]) -> bool:
+    hardware_health = payload.get("hardwareHealth")
+    if not isinstance(hardware_health, dict):
+        return False
+
+    fallback_checked_at = _now_iso()
+    changed = False
+
+    for component in hardware_health.values():
+        if not isinstance(component, dict):
+            continue
+
+        if not _is_valid_iso_timestamp(component.get("lastCheckedAt")):
+            component["lastCheckedAt"] = fallback_checked_at
+            changed = True
+
+    return changed
 
 
 def _safe_name(value: str | None, fallback: str) -> str:
@@ -475,6 +543,7 @@ class TelemetryUploader:
         if not isinstance(payload, dict):
             raise TelemetryUploadError(f"Pending file has invalid payload: {pending_path}")
 
+        _normalize_hardware_health(payload)
         if attempts >= self.max_retries:
             failed_path = _move_file_unique(pending_path, self.failed_dir)
 

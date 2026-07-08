@@ -250,6 +250,7 @@ def build_bin_state_payload(
     status_message: str = "Running",
     org_id: str | None = None,
     bin_code: str | None = None,
+    detailed_health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "orgId": org_id or settings.device.org_id,
@@ -277,6 +278,9 @@ def build_bin_state_payload(
             raise SupabasePayloadError("latest_event.eventId is required")
 
         payload["latestEvent"] = latest_event
+
+    if settings.health.detailed_telemetry_enabled and detailed_health is not None:
+        payload["hardwareHealth"] = detailed_health
 
     return payload
 

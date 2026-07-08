@@ -93,7 +93,7 @@ class SequentialGpioZeroUltrasonicBackend:
                     return float(self.timeout_as_distance_cm)
 
                 raise UltrasonicSensorError(
-                    f"{config.name}: ultrasonic echo timeout or out-of-range reading"
+                    f"{config.name}: echo_timeout or out-of-range reading"
                 )
 
             return distance_cm
@@ -141,6 +141,7 @@ class DirectPiHardwareStack:
     front_session_backend: SequentialGpioZeroUltrasonicBackend
     indicator_backend: GpioZeroCapacityIndicatorBackend
     front_sensor: UltrasonicDistanceSensor
+    front_health_sensor: UltrasonicDistanceSensor
     left_capacity_sensor: UltrasonicDistanceSensor
     right_capacity_sensor: UltrasonicDistanceSensor
     left_side_sensor: UltrasonicDistanceSensor
@@ -191,6 +192,13 @@ def build_direct_pi_hardware_stack() -> DirectPiHardwareStack:
     front_sensor = _build_sensor(
         pin_config=PIN_MAP.ultrasonic_front,
         backend=front_session_backend,
+        samples=1,
+        max_distance_cm=200.0,
+    )
+
+    front_health_sensor = _build_sensor(
+        pin_config=PIN_MAP.ultrasonic_front,
+        backend=ultrasonic_backend,
         samples=1,
         max_distance_cm=200.0,
     )
@@ -272,6 +280,7 @@ def build_direct_pi_hardware_stack() -> DirectPiHardwareStack:
         front_session_backend=front_session_backend,
         indicator_backend=indicator_backend,
         front_sensor=front_sensor,
+        front_health_sensor=front_health_sensor,
         left_capacity_sensor=left_capacity_sensor,
         right_capacity_sensor=right_capacity_sensor,
         left_side_sensor=left_side_sensor,

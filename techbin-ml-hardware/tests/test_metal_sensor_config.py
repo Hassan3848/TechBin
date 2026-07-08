@@ -222,7 +222,7 @@ def test_build_from_pin_config() -> None:
     sensor = build_metal_sensor_from_pin_config(
         PIN_MAP.metal_sensor,
         enabled=True,
-        backend=SimulatedMetalSensorBackend(fixed_signal=True),
+        backend=SimulatedMetalSensorBackend(fixed_signal=False),
         samples=3,
     )
 
@@ -231,7 +231,9 @@ def test_build_from_pin_config() -> None:
     pprint(reading.to_dict())
 
     assert reading.valid is True
+    assert reading.metalDetected is True
     assert reading.signalGpio == PIN_MAP.metal_sensor.signal_gpio
+    assert reading.activeLow == PIN_MAP.metal_sensor.active_low
 
     print("PASS: build from pin config")
 

@@ -25,6 +25,50 @@ LOGS_DIR: Final[Path] = PROJECT_ROOT / "logs"
 MODELS_DIR: Final[Path] = PROJECT_ROOT / "models"
 
 
+def _strip_env_quotes(value: str) -> str:
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
+        return cleaned[1:-1]
+    return cleaned
+
+
+def _load_local_env_file() -> None:
+    """
+    Load local Pi runtime settings from a Git-ignored env file.
+
+    Existing process environment values win. This keeps deployment managers and
+    systemd EnvironmentFile settings authoritative while still supporting a
+    local, reboot-persistent file for the Pi.
+    """
+
+    env_path = Path(os.getenv("TECHBIN_LOCAL_ENV_FILE", PROJECT_ROOT / ".env.local")).expanduser()
+    if not env_path.exists():
+        return
+
+    try:
+        if env_path.stat().st_mode & 0o077:
+            raise RuntimeError(f"{env_path} must be permission mode 600")
+
+        with env_path.open("r", encoding="utf-8") as file:
+            for raw_line in file:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+
+                name, value = line.split("=", 1)
+                name = name.strip()
+                if not name or name in os.environ:
+                    continue
+
+                os.environ[name] = _strip_env_quotes(value)
+
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load local env file {env_path}") from exc
+
+
+_load_local_env_file()
+
+
 # ---------------------------------------------------------------------
 # Device identity
 # ---------------------------------------------------------------------
@@ -117,6 +161,25 @@ class SupabaseSettings:
 
 
 @dataclass(frozen=True)
+class HealthSettings:
+    detailed_telemetry_enabled: bool = False
+    heartbeat_enabled: bool = False
+    ultrasonic_warning_failures: int = 2
+    ultrasonic_critical_failures: int = 3
+    ultrasonic_recovery_successes: int = 2
+    queue_warning_pending: int = 10
+    queue_critical_pending: int = 100
+
+
+@dataclass(frozen=True)
+class VoiceFeedbackSettings:
+    enabled: bool = False
+    backend: str = "disabled"
+    audio_dir: str = ""
+    player_command: str = ""
+
+
+@dataclass(frozen=True)
 class AppSettings:
     project_root: Path
     captures_dir: Path
@@ -127,6 +190,8 @@ class AppSettings:
     logging: LoggingSettings
     device: DeviceSettings
     supabase: SupabaseSettings
+    health: HealthSettings
+    voice_feedback: VoiceFeedbackSettings
 
 
 def _get_env_str(name: str, default: str) -> str:
@@ -220,6 +285,44 @@ def load_settings() -> AppSettings:
         timeout_seconds=_get_env_float("TECHBIN_SUPABASE_TIMEOUT_SECONDS", 10.0),
     )
 
+    health_settings = HealthSettings(
+        detailed_telemetry_enabled=_get_env_bool(
+            "TECHBIN_ENABLE_DETAILED_HEALTH_TELEMETRY",
+            False,
+        ),
+        heartbeat_enabled=_get_env_bool(
+            "TECHBIN_ENABLE_HEALTH_HEARTBEAT",
+            False,
+        ),
+        ultrasonic_warning_failures=_get_env_int(
+            "TECHBIN_HEALTH_ULTRASONIC_WARNING_FAILURES",
+            2,
+        ),
+        ultrasonic_critical_failures=_get_env_int(
+            "TECHBIN_HEALTH_ULTRASONIC_CRITICAL_FAILURES",
+            3,
+        ),
+        ultrasonic_recovery_successes=_get_env_int(
+            "TECHBIN_HEALTH_ULTRASONIC_RECOVERY_SUCCESSES",
+            2,
+        ),
+        queue_warning_pending=_get_env_int(
+            "TECHBIN_HEALTH_QUEUE_WARNING_PENDING",
+            10,
+        ),
+        queue_critical_pending=_get_env_int(
+            "TECHBIN_HEALTH_QUEUE_CRITICAL_PENDING",
+            100,
+        ),
+    )
+
+    voice_feedback_settings = VoiceFeedbackSettings(
+        enabled=_get_env_bool("TECHBIN_ENABLE_VOICE_FEEDBACK", False),
+        backend=_get_env_str("TECHBIN_VOICE_FEEDBACK_BACKEND", "disabled"),
+        audio_dir=_get_env_str("TECHBIN_VOICE_AUDIO_DIR", ""),
+        player_command=_get_env_str("TECHBIN_VOICE_PLAYER_COMMAND", ""),
+    )
+
     return AppSettings(
         project_root=PROJECT_ROOT,
         captures_dir=CAPTURES_DIR,
@@ -230,6 +333,8 @@ def load_settings() -> AppSettings:
         logging=logging_settings,
         device=device_settings,
         supabase=supabase_settings,
+        health=health_settings,
+        voice_feedback=voice_feedback_settings,
     )
 
 

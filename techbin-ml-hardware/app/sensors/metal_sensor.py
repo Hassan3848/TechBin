@@ -215,10 +215,14 @@ class GpioZeroMetalSensorBackend:
 
     def _get_device(self, config: MetalSensorConfig):
         if config.signal_gpio not in self._devices:
-            self._devices[config.signal_gpio] = self._input_class(
-                pin=config.signal_gpio,
-                pull_up=self.pull_up,
-            )
+            input_kwargs = {
+                "pin": config.signal_gpio,
+                "pull_up": self.pull_up,
+            }
+            if self.pull_up is None:
+                input_kwargs["active_state"] = True
+
+            self._devices[config.signal_gpio] = self._input_class(**input_kwargs)
 
         return self._devices[config.signal_gpio]
 

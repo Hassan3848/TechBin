@@ -38,6 +38,17 @@ run_test "tests/test_confidence_engine.py"
 run_test "tests/test_telemetry_uploader.py"
 run_test "tests/test_fault_reporter.py"
 run_test "tests/test_health_monitor.py"
+run_test "tests/test_ultrasonic_config.py"
+run_test "tests/test_fill_level.py"
+run_test "tests/test_capacity_indicator.py"
+run_test "tests/test_capacity_monitor.py"
+run_test "tests/test_session_detector.py"
+run_test "tests/test_side_detector.py"
+run_test "tests/test_arduino_ultrasonic_adapter.py"
+run_test "tests/test_arduino_capacity_monitor.py"
+run_test "tests/test_arduino_side_detection_monitor.py"
+run_test "tests/test_hardware_event_flow.py"
+run_test "tests/test_metal_sensor_config.py"
 run_test "tests/test_event_processor.py"
 
 if [[ "$RUN_CAMERA_TESTS" == "1" ]]; then
@@ -51,6 +62,8 @@ else
   echo "To run camera tests:"
   echo "  TECHBIN_RUN_CAMERA_TESTS=1 ./scripts/run_foundation_tests.sh"
 fi
+
+run_test "tests/test_arduino_side_confirmation_runner.py"
 
 echo
 echo "================================================="

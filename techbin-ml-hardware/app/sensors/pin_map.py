@@ -143,8 +143,8 @@ PIN_MAP = TechBinPinMap(
     ),
     metal_sensor=MetalSensorPins(
         signal_gpio=21,
-        enabled=False,
-        active_low=False,
+        enabled=True,
+        active_low=True,
     ),
     traffic_light_left=TrafficLightPins(
         name="left_capacity_indicator",

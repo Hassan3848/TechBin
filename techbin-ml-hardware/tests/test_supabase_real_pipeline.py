@@ -8,9 +8,11 @@ Run from project root:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import app.engine.real_device_pipeline as real_device_pipeline
 from app.engine.real_device_pipeline import (
     RealDeviceDisposalPipeline,
     RealDevicePipelineConfig,
@@ -99,6 +101,36 @@ class FakeClassifier:
         return self.prediction
 
 
+class FakeMetalSensor:
+    def __init__(
+        self,
+        *,
+        detected: bool | None = False,
+        valid: bool = True,
+        fault_code: str | None = None,
+    ) -> None:
+        self.detected = detected
+        self.valid = valid
+        self.fault_code = fault_code
+
+    def read_debounced(self) -> DictResult:
+        return DictResult(
+            {
+                "sensorName": "metal_sensor",
+                "metalDetected": self.detected,
+                "rawValues": (
+                    [not self.detected] * 5
+                    if isinstance(self.detected, bool)
+                    else []
+                ),
+                "valid": self.valid,
+                "faultCode": self.fault_code,
+                "signalGpio": 21,
+                "activeLow": True,
+            }
+        )
+
+
 def prediction(
     *,
     category: str = "cardboard",
@@ -135,6 +167,7 @@ def build_pipeline(
     side: str | None,
     side_valid: bool,
     pred: RealPredictionResult,
+    metal_sensor: FakeMetalSensor | None = None,
     transport: StaticTransport | None = None,
 ) -> RealDeviceDisposalPipeline:
     uploader = TelemetryUploader(
@@ -147,6 +180,7 @@ def build_pipeline(
     return RealDeviceDisposalPipeline(
         hardware_stack=FakeStack(side=side, side_valid=side_valid),
         classifier=FakeClassifier(pred),
+        metal_sensor=metal_sensor or FakeMetalSensor(detected=False),
         totals_store=LocalTotalsStore(tmp / "totals.json"),
         telemetry_uploader=uploader,
         config=RealDevicePipelineConfig(
@@ -158,6 +192,25 @@ def build_pipeline(
     )
 
 
+def process_once_with_metal_override(
+    pipeline: RealDeviceDisposalPipeline,
+    *,
+    enabled: bool,
+):
+    original_settings = real_device_pipeline.settings
+    real_device_pipeline.settings = replace(
+        original_settings,
+        device=replace(
+            original_settings.device,
+            metal_override_enabled=enabled,
+        ),
+    )
+    try:
+        return pipeline.process_once(camera=object())
+    finally:
+        real_device_pipeline.settings = original_settings
+
+
 def test_confirmed_recyclable_event(tmp: Path) -> None:
     result = build_pipeline(
         tmp=tmp,
@@ -167,6 +220,8 @@ def test_confirmed_recyclable_event(tmp: Path) -> None:
     ).process_once(camera=object())
 
     assert result.status == "processed"
+    assert result.metalSensor is not None
+    assert result.metalSensor["metalDetected"] is False
     assert result.supabasePayload is not None
     assert result.supabasePayload["latestEvent"]["category"] == "cardboard"
     assert result.supabasePayload["latestEvent"]["correct"] is True
@@ -175,6 +230,193 @@ def test_confirmed_recyclable_event(tmp: Path) -> None:
     assert result.totals["cardboard"] == 1
     assert result.totals["correctDisposals"] == 1
     assert result.totals["incorrectDisposals"] == 0
+
+
+def test_metal_false_keeps_camera_category(tmp: Path) -> None:
+    result = build_pipeline(
+        tmp=tmp,
+        side="right",
+        side_valid=True,
+        pred=prediction(category="plastic_glass"),
+        metal_sensor=FakeMetalSensor(detected=False),
+    ).process_once(camera=object())
+
+    assert result.status == "processed"
+    assert result.metalSensor is not None
+    assert result.metalSensor["metalDetected"] is False
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["category"] == "plastic_glass"
+    assert event["label"] == "plastic_glass"
+    assert event["classificationSource"] == "camera"
+    assert event["expectedSide"] == "recyclable"
+    assert result.totals is not None
+    assert result.totals["plastic_glass"] == 1
+    assert result.totals["metal"] == 0
+
+
+def test_metal_true_override_disabled_keeps_camera_category(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side="right",
+            side_valid=True,
+            pred=prediction(category="plastic_glass"),
+            metal_sensor=FakeMetalSensor(detected=True),
+        ),
+        enabled=False,
+    )
+
+    assert result.status == "processed"
+    assert result.metalSensor is not None
+    assert result.metalSensor["metalDetected"] is True
+    assert result.prediction is not None
+    assert result.prediction["category"] == "plastic_glass"
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["category"] == "plastic_glass"
+    assert event["label"] == "plastic_glass"
+    assert event["classificationSource"] == "camera"
+    assert result.totals is not None
+    assert result.totals["plastic_glass"] == 1
+    assert result.totals["metal"] == 0
+
+
+def test_metal_true_override_enabled_overrides_plastic_glass_to_metal(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side="right",
+            side_valid=True,
+            pred=prediction(category="plastic_glass"),
+            metal_sensor=FakeMetalSensor(detected=True),
+        ),
+        enabled=True,
+    )
+
+    assert result.status == "processed"
+    assert result.metalSensor is not None
+    assert result.metalSensor["metalDetected"] is True
+    assert result.prediction is not None
+    assert result.prediction["category"] == "plastic_glass"
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["category"] == "metal"
+    assert event["label"] == "metal"
+    assert event["classificationSource"] == "metal_sensor"
+    assert event["expectedSide"] == "recyclable"
+    assert event["correct"] is True
+    assert result.totals is not None
+    assert result.totals["plastic_glass"] == 0
+    assert result.totals["metal"] == 1
+
+
+def test_metal_false_override_enabled_keeps_camera_category(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side="right",
+            side_valid=True,
+            pred=prediction(category="plastic_glass"),
+            metal_sensor=FakeMetalSensor(detected=False),
+        ),
+        enabled=True,
+    )
+
+    assert result.status == "processed"
+    assert result.metalSensor is not None
+    assert result.metalSensor["metalDetected"] is False
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["category"] == "plastic_glass"
+    assert event["label"] == "plastic_glass"
+    assert event["classificationSource"] == "camera"
+    assert result.totals is not None
+    assert result.totals["plastic_glass"] == 1
+    assert result.totals["metal"] == 0
+
+
+def test_metal_true_overrides_plastic_glass_to_metal(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side="right",
+            side_valid=True,
+            pred=prediction(category="plastic_glass"),
+            metal_sensor=FakeMetalSensor(detected=True),
+        ),
+        enabled=True,
+    )
+
+    assert result.status == "processed"
+    assert result.metalSensor is not None
+    assert result.metalSensor["metalDetected"] is True
+    assert result.prediction is not None
+    assert result.prediction["category"] == "plastic_glass"
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["category"] == "metal"
+    assert event["label"] == "metal"
+    assert event["classificationSource"] == "metal_sensor"
+    assert event["expectedSide"] == "recyclable"
+    assert event["correct"] is True
+    assert result.totals is not None
+    assert result.totals["plastic_glass"] == 0
+    assert result.totals["metal"] == 1
+
+
+def test_metal_true_overrides_cardboard_to_metal(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side="right",
+            side_valid=True,
+            pred=prediction(category="cardboard"),
+            metal_sensor=FakeMetalSensor(detected=True),
+        ),
+        enabled=True,
+    )
+
+    assert result.status == "processed"
+    assert result.prediction is not None
+    assert result.prediction["category"] == "cardboard"
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["category"] == "metal"
+    assert event["classificationSource"] == "metal_sensor"
+    assert event["expectedSide"] == "recyclable"
+    assert result.totals is not None
+    assert result.totals["cardboard"] == 0
+    assert result.totals["metal"] == 1
+
+
+def test_invalid_metal_reading_keeps_camera_category(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side="right",
+            side_valid=True,
+            pred=prediction(category="plastic_glass"),
+            metal_sensor=FakeMetalSensor(
+                detected=None,
+                valid=False,
+                fault_code="forced_invalid",
+            ),
+        ),
+        enabled=True,
+    )
+
+    assert result.status == "processed"
+    assert result.metalSensor is not None
+    assert result.metalSensor["valid"] is False
+    assert result.metalSensor["faultCode"] == "forced_invalid"
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["category"] == "plastic_glass"
+    assert event["classificationSource"] == "camera"
+    assert result.totals is not None
+    assert result.totals["plastic_glass"] == 1
+    assert result.totals["metal"] == 0
 
 
 def test_confirmed_incorrect_disposal(tmp: Path) -> None:
@@ -295,6 +537,19 @@ def main() -> None:
     with TemporaryDirectory(prefix="techbin_supabase_tests_") as tmpdir:
         tmp = Path(tmpdir)
         test_confirmed_recyclable_event(tmp / "confirmed_recyclable")
+        test_metal_false_keeps_camera_category(tmp / "metal_false")
+        test_metal_true_override_disabled_keeps_camera_category(
+            tmp / "metal_true_disabled"
+        )
+        test_metal_true_override_enabled_overrides_plastic_glass_to_metal(
+            tmp / "metal_true_enabled"
+        )
+        test_metal_false_override_enabled_keeps_camera_category(
+            tmp / "metal_false_enabled"
+        )
+        test_metal_true_overrides_plastic_glass_to_metal(tmp / "metal_true_plastic")
+        test_metal_true_overrides_cardboard_to_metal(tmp / "metal_true_cardboard")
+        test_invalid_metal_reading_keeps_camera_category(tmp / "metal_invalid")
         test_confirmed_incorrect_disposal(tmp / "incorrect")
         test_uncertain_prediction_does_not_update_totals(tmp / "uncertain")
         test_unconfirmed_side_does_not_update_totals(tmp / "unconfirmed")
