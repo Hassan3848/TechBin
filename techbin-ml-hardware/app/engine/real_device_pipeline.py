@@ -432,20 +432,69 @@ class RealDeviceDisposalPipeline:
                 or not side_data.get("valid")
                 or side_data.get("disposalSide") not in ("left", "right")
             ):
+                event_id = new_event_id(settings.supabase.bin_code)
+                latest_event = build_latest_event(
+                    event_id=event_id,
+                    category=effective_category,
+                    disposed_side=None,
+                    confidence=prediction.confidence,
+                    model_version=prediction.modelVersion,
+                    classification_source=(
+                        "metal_sensor"
+                        if metal_override_applied
+                        else prediction.classificationSource
+                    ),
+                    label=METAL_OVERRIDE_CATEGORY if metal_override_applied else prediction.label,
+                    placement_confirmed=False,
+                    image_url=None,
+                )
+                logger.info(
+                    "Placement unconfirmed event | effectiveFinalCategory=%s | expectedSide=%s | disposedSide=%s | correct=%s",
+                    latest_event["category"],
+                    latest_event["expectedSide"],
+                    latest_event["disposedSide"],
+                    latest_event["correct"],
+                )
+
+                totals = self.totals_store.update_for_classified_event(
+                    category=effective_category,
+                )
+                payload = build_bin_state_payload(
+                    statistics=totals,
+                    latest_event=latest_event,
+                    status_state="normal",
+                    status_message="Placement was not confirmed.",
+                    detailed_health=self.health_supervisor.to_payload(),
+                )
+                log_path = save_event_log(
+                    payload,
+                    prefix=self.config.log_prefix,
+                )
+                telemetry_result = self._handle_telemetry(payload, event_id=event_id)
+                if telemetry_result is not None and self.config.telemetry_mode == "upload_or_queue":
+                    self.health_supervisor.observe_network_result(
+                        ok=telemetry_result.status == "sent",
+                        message=telemetry_result.message,
+                    )
+
                 return RealDevicePipelineResult(
                     timestamp=_now_iso(),
                     status="side_unconfirmed",
                     processed=False,
                     message="Physical disposal side was not confirmed.",
-                    eventId=None,
+                    eventId=event_id,
                     prediction=prediction.to_dict(),
                     metalSensor=metal_reading,
                     sideDetection=side_data,
                     capacity=None,
-                    totals=None,
-                    supabasePayload=None,
-                    logPath=None,
-                    telemetry=None,
+                    totals=totals,
+                    supabasePayload=payload,
+                    logPath=str(log_path),
+                    telemetry=(
+                        telemetry_result.to_dict()
+                        if telemetry_result is not None
+                        else None
+                    ),
                     faultCode="side_unconfirmed",
                     config=self.config.to_dict(),
                 )

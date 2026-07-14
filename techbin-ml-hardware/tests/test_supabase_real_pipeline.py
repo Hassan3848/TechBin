@@ -451,7 +451,7 @@ def test_uncertain_prediction_does_not_update_totals(tmp: Path) -> None:
     assert not (tmp / "totals.json").exists()
 
 
-def test_unconfirmed_side_does_not_update_totals(tmp: Path) -> None:
+def test_unconfirmed_side_records_placement_unconfirmed_event(tmp: Path) -> None:
     result = build_pipeline(
         tmp=tmp,
         side=None,
@@ -460,9 +460,61 @@ def test_unconfirmed_side_does_not_update_totals(tmp: Path) -> None:
     ).process_once(camera=object())
 
     assert result.status == "side_unconfirmed"
-    assert result.supabasePayload is None
-    assert result.totals is None
-    assert not (tmp / "totals.json").exists()
+    assert result.processed is False
+    assert result.eventId is not None
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["eventId"] == result.eventId
+    assert event["category"] == "paper"
+    assert event["label"] == "paper"
+    assert event["classificationSource"] == "camera"
+    assert event["expectedSide"] == "recyclable"
+    assert event["disposedSide"] is None
+    assert event["correct"] is None
+    assert event["placementConfirmed"] is False
+    assert result.totals is not None
+    assert result.totals["totalItems"] == 1
+    assert result.totals["paper"] == 1
+    assert result.totals["recyclableItems"] == 1
+    assert result.totals["nonRecyclableItems"] == 0
+    assert result.totals["correctDisposals"] == 0
+    assert result.totals["incorrectDisposals"] == 0
+    assert result.telemetry is not None
+    assert result.telemetry["status"] == "queued"
+    queued_files = list((tmp / "queue" / "pending").glob("*.json"))
+    assert len(queued_files) == 1
+
+
+def test_unconfirmed_side_with_metal_override_records_metal_event(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side=None,
+            side_valid=False,
+            pred=prediction(category="plastic_glass"),
+            metal_sensor=FakeMetalSensor(detected=True),
+        ),
+        enabled=True,
+    )
+
+    assert result.status == "side_unconfirmed"
+    assert result.eventId is not None
+    assert result.supabasePayload is not None
+    event = result.supabasePayload["latestEvent"]
+    assert event["category"] == "metal"
+    assert event["label"] == "metal"
+    assert event["classificationSource"] == "metal_sensor"
+    assert event["expectedSide"] == "recyclable"
+    assert event["disposedSide"] is None
+    assert event["correct"] is None
+    assert event["placementConfirmed"] is False
+    assert result.totals is not None
+    assert result.totals["totalItems"] == 1
+    assert result.totals["plastic_glass"] == 0
+    assert result.totals["metal"] == 1
+    assert result.totals["recyclableItems"] == 1
+    assert result.totals["correctDisposals"] == 0
+    assert result.totals["incorrectDisposals"] == 0
 
 
 def test_duplicate_queue_retry_preserves_event_id(tmp: Path) -> None:
@@ -521,6 +573,23 @@ def test_duplicate_queue_retry_preserves_event_id(tmp: Path) -> None:
     assert sent["payload"]["latestEvent"]["eventId"] == event_id
 
 
+def test_latest_event_allows_unconfirmed_placement() -> None:
+    event = build_latest_event(
+        event_id="pi-BIN-001-test-unconfirmed",
+        category="plastic_glass",
+        disposed_side=None,
+        confidence=0.9,
+        model_version="test-model",
+        placement_confirmed=False,
+    )
+
+    assert event["category"] == "plastic_glass"
+    assert event["expectedSide"] == "recyclable"
+    assert event["disposedSide"] is None
+    assert event["correct"] is None
+    assert event["placementConfirmed"] is False
+
+
 def test_heartbeat_has_no_latest_event() -> None:
     payload = build_heartbeat_payload(
         statistics={"totalItems": 3, "paper": 1},
@@ -552,8 +621,12 @@ def main() -> None:
         test_invalid_metal_reading_keeps_camera_category(tmp / "metal_invalid")
         test_confirmed_incorrect_disposal(tmp / "incorrect")
         test_uncertain_prediction_does_not_update_totals(tmp / "uncertain")
-        test_unconfirmed_side_does_not_update_totals(tmp / "unconfirmed")
+        test_unconfirmed_side_records_placement_unconfirmed_event(tmp / "unconfirmed")
+        test_unconfirmed_side_with_metal_override_records_metal_event(
+            tmp / "unconfirmed_metal"
+        )
         test_duplicate_queue_retry_preserves_event_id(tmp / "duplicate")
+        test_latest_event_allows_unconfirmed_placement()
         test_heartbeat_has_no_latest_event()
 
     print("All Supabase real pipeline dry-run tests passed.")

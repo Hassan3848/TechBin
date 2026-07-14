@@ -110,6 +110,25 @@ class LocalTotalsStore:
         _write_json_atomic(self.path, normalized)
         return normalized
 
+    def update_for_classified_event(
+        self,
+        *,
+        category: str,
+    ) -> dict[str, int]:
+        if category not in REAL_MODEL_CATEGORIES:
+            raise TotalsStoreError(f"Unsupported category for totals: {category}")
+
+        totals = self.load()
+        totals["totalItems"] += 1
+        totals[category] += 1
+
+        if category in RECYCLABLE_CATEGORIES:
+            totals["recyclableItems"] += 1
+        else:
+            totals["nonRecyclableItems"] += 1
+
+        return self.save(totals)
+
     def update_for_confirmed_event(
         self,
         *,

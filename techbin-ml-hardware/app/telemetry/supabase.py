@@ -170,7 +170,7 @@ def build_latest_event(
     *,
     event_id: str,
     category: str,
-    disposed_side: str,
+    disposed_side: str | None,
     confidence: float,
     timestamp: str | None = None,
     model_version: str | None = None,
@@ -183,11 +183,17 @@ def build_latest_event(
         raise SupabasePayloadError(f"Unsupported category: {category}")
 
     expected_side = expected_side_for_category(category)
-    normalized_disposed_side = (
-        disposed_side
-        if disposed_side in VALID_SUPABASE_SIDES
-        else physical_side_to_supabase(disposed_side)
-    )
+    if not placement_confirmed or disposed_side is None:
+        normalized_disposed_side = None
+        correct = None
+        placement_confirmed = False
+    else:
+        normalized_disposed_side = (
+            disposed_side
+            if disposed_side in VALID_SUPABASE_SIDES
+            else physical_side_to_supabase(disposed_side)
+        )
+        correct = normalized_disposed_side == expected_side
 
     return {
         "eventId": event_id,
@@ -197,7 +203,7 @@ def build_latest_event(
         "recyclable": category_is_recyclable(category),
         "expectedSide": expected_side,
         "disposedSide": normalized_disposed_side,
-        "correct": normalized_disposed_side == expected_side,
+        "correct": correct,
         "confidence": float(confidence),
         "placementConfirmed": bool(placement_confirmed),
         "modelVersion": model_version or settings.ml.model_version,

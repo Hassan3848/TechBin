@@ -78,6 +78,8 @@ Allowed omitted/null values include:
 - `faults.ir`
 - `faults.servo`
 - `faults.motor`
+- `latestEvent.disposedSide` when placement was not confirmed
+- `latestEvent.correct` when placement was not confirmed
 - `latestEvent.imageUrl`
 
 The dashboard no longer displays missing `temperature` or `gasLevel` as invented zero readings. Missing values display as `-`.
