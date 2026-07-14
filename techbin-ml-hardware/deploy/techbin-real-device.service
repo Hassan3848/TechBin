@@ -1,0 +1,31 @@
+[Unit]
+Description=TechBin continuous real-device runtime
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+ConditionPathExists=/home/hassan/combined/TechBin/techbin-ml-hardware/.venv/bin/python
+ConditionPathExists=/home/hassan/combined/TechBin/techbin-ml-hardware/.env.local
+
+[Service]
+Type=simple
+User=hassan
+Group=hassan
+SupplementaryGroups=gpio video render
+WorkingDirectory=/home/hassan/combined/TechBin/techbin-ml-hardware
+Environment=PYTHONPATH=/home/hassan/combined/TechBin/techbin-ml-hardware
+EnvironmentFile=/home/hassan/combined/TechBin/techbin-ml-hardware/.env.local
+UMask=0077
+ExecStartPre=/home/hassan/combined/TechBin/techbin-ml-hardware/.venv/bin/python scripts/preflight_demo_readiness.py
+ExecStart=/home/hassan/combined/TechBin/techbin-ml-hardware/.venv/bin/python -m app.main_real_device_continuous --telemetry-mode upload_or_queue --json
+Restart=on-failure
+RestartSec=10s
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=techbin-real-device
+
+[Install]
+WantedBy=multi-user.target

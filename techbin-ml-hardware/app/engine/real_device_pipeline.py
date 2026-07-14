@@ -173,6 +173,8 @@ class RealDeviceDisposalPipeline:
         metal_sensor: MetalSensor | Any | None = None,
         config: RealDevicePipelineConfig | None = None,
     ) -> None:
+        self._owns_hardware_stack = hardware_stack is None
+        self._owns_metal_sensor = metal_sensor is None
         self.hardware_stack = hardware_stack
         self.classifier = classifier
         self.metal_sensor = metal_sensor
@@ -209,6 +211,28 @@ class RealDeviceDisposalPipeline:
             )
 
         return self.metal_sensor
+
+    def _release_owned_session_hardware(self) -> None:
+        if self._owns_metal_sensor and self.metal_sensor is not None:
+            metal_sensor = self.metal_sensor
+            self.metal_sensor = None
+            backend = getattr(metal_sensor, "backend", None)
+            close_backend = getattr(backend, "close", None)
+            if callable(close_backend):
+                try:
+                    close_backend()
+                except Exception as exc:
+                    logger.warning("Failed to close metal sensor backend: %s", exc)
+
+        if self._owns_hardware_stack and self.hardware_stack is not None:
+            hardware_stack = self.hardware_stack
+            self.hardware_stack = None
+            close_stack = getattr(hardware_stack, "close", None)
+            if callable(close_stack):
+                try:
+                    close_stack()
+                except Exception as exc:
+                    logger.warning("Failed to close direct-Pi hardware stack: %s", exc)
 
     def _read_metal_sensor(self) -> tuple[dict[str, Any] | None, bool | None]:
         try:
@@ -643,6 +667,7 @@ class RealDeviceDisposalPipeline:
                     active_camera.close()
                 except Exception:
                     pass
+            self._release_owned_session_hardware()
 
 
 __all__ = [
