@@ -196,15 +196,25 @@ def process_once_with_metal_override(
     pipeline: RealDeviceDisposalPipeline,
     *,
     enabled: bool,
+    detailed_health_enabled: bool | None = None,
 ):
     original_settings = real_device_pipeline.settings
-    real_device_pipeline.settings = replace(
+    updated_settings = replace(
         original_settings,
         device=replace(
             original_settings.device,
             metal_override_enabled=enabled,
         ),
     )
+    if detailed_health_enabled is not None:
+        updated_settings = replace(
+            updated_settings,
+            health=replace(
+                updated_settings.health,
+                detailed_telemetry_enabled=detailed_health_enabled,
+            ),
+        )
+    real_device_pipeline.settings = updated_settings
     try:
         return pipeline.process_once(camera=object())
     finally:
@@ -419,6 +429,53 @@ def test_invalid_metal_reading_keeps_camera_category(tmp: Path) -> None:
     assert result.totals["metal"] == 0
 
 
+def test_confirmed_event_reports_metal_and_queue_health(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side="right",
+            side_valid=True,
+            pred=prediction(category="cardboard"),
+            metal_sensor=FakeMetalSensor(detected=False),
+        ),
+        enabled=True,
+        detailed_health_enabled=True,
+    )
+
+    assert result.status == "processed"
+    assert result.supabasePayload is not None
+    health = result.supabasePayload["hardwareHealth"]
+    assert health["metalDetector"]["status"] == "healthy"
+    assert health["metalDetector"]["faultCode"] is None
+    assert health["telemetryQueue"]["status"] == "healthy"
+    assert health["network"]["status"] == "unknown"
+
+
+def test_invalid_metal_reading_reports_metal_health_warning(tmp: Path) -> None:
+    result = process_once_with_metal_override(
+        build_pipeline(
+            tmp=tmp,
+            side="right",
+            side_valid=True,
+            pred=prediction(category="plastic_glass"),
+            metal_sensor=FakeMetalSensor(
+                detected=None,
+                valid=False,
+                fault_code="forced_invalid",
+            ),
+        ),
+        enabled=True,
+        detailed_health_enabled=True,
+    )
+
+    assert result.status == "processed"
+    assert result.supabasePayload is not None
+    health = result.supabasePayload["hardwareHealth"]
+    assert health["metalDetector"]["status"] == "warning"
+    assert health["metalDetector"]["faultCode"] == "forced_invalid"
+    assert health["network"]["status"] == "unknown"
+
+
 def test_confirmed_incorrect_disposal(tmp: Path) -> None:
     result = build_pipeline(
         tmp=tmp,
@@ -619,6 +676,10 @@ def main() -> None:
         test_metal_true_overrides_plastic_glass_to_metal(tmp / "metal_true_plastic")
         test_metal_true_overrides_cardboard_to_metal(tmp / "metal_true_cardboard")
         test_invalid_metal_reading_keeps_camera_category(tmp / "metal_invalid")
+        test_confirmed_event_reports_metal_and_queue_health(tmp / "health_mapping")
+        test_invalid_metal_reading_reports_metal_health_warning(
+            tmp / "health_mapping_invalid"
+        )
         test_confirmed_incorrect_disposal(tmp / "incorrect")
         test_uncertain_prediction_does_not_update_totals(tmp / "uncertain")
         test_unconfirmed_side_records_placement_unconfirmed_event(tmp / "unconfirmed")

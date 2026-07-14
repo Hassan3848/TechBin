@@ -247,6 +247,29 @@ class RealDeviceDisposalPipeline:
         logger.info("Metal sensor evidence passed into real-device flow | metal_detected=%s", metal_detected)
         return reading_data, metal_detected
 
+    def _observe_metal_health(self, metal_reading: dict[str, Any] | None) -> None:
+        if not settings.device.metal_override_enabled:
+            return
+
+        self.health_supervisor.observe_metal_detector(
+            metal_reading
+            or {
+                "valid": False,
+                "faultCode": "metal_sensor_read_missing",
+                "message": "Metal sensor reading was unavailable.",
+            }
+        )
+
+    def _observe_telemetry_queue_health(self) -> None:
+        queue_root = (
+            self.telemetry_uploader.queue_root
+            if self.telemetry_uploader is not None
+            else settings.logs_dir / "telemetry_queue"
+        )
+        self.health_supervisor.observe_telemetry_queue(
+            queue_root
+        )
+
     def _get_uploader(self) -> TelemetryUploader:
         if self.telemetry_uploader is None:
             self.telemetry_uploader = TelemetryUploader(
@@ -408,6 +431,7 @@ class RealDeviceDisposalPipeline:
                 )
 
             metal_reading, metal_detected = self._read_metal_sensor()
+            self._observe_metal_health(metal_reading)
             metal_override_enabled = settings.device.metal_override_enabled
             effective_category, metal_override_applied = _resolve_effective_category(
                 original_category=prediction.category,
@@ -459,6 +483,7 @@ class RealDeviceDisposalPipeline:
                 totals = self.totals_store.update_for_classified_event(
                     category=effective_category,
                 )
+                self._observe_telemetry_queue_health()
                 payload = build_bin_state_payload(
                     statistics=totals,
                     latest_event=latest_event,
@@ -539,6 +564,7 @@ class RealDeviceDisposalPipeline:
             if isinstance(capacity_data, dict):
                 ultrasonic_fault = not bool(capacity_data.get("overallValid", True))
 
+            self._observe_telemetry_queue_health()
             payload = build_bin_state_payload(
                 statistics=totals,
                 sensors=sensor_payload,

@@ -221,6 +221,29 @@ class HardwareHealthSupervisor:
             force_status=WARNING,
         )
 
+    def observe_metal_detector(self, observation: Any) -> ComponentHealth:
+        data = observation.to_dict() if hasattr(observation, "to_dict") else observation
+        if not isinstance(data, dict):
+            data = {
+                "valid": False,
+                "faultCode": "invalid_health_observation",
+                "message": str(observation),
+            }
+
+        if bool(data.get("valid")):
+            detected = data.get("metalDetected")
+            return self._record_success(
+                "metal_detector",
+                message=f"Valid metal detector observation received; metalDetected={detected}.",
+            )
+
+        return self._record_failure(
+            "metal_detector",
+            fault_code=str(data.get("faultCode") or "metal_detector_invalid"),
+            message=str(data.get("message") or "Invalid metal detector observation received."),
+            force_status=WARNING,
+        )
+
     def observe_telemetry_queue(self, queue_root: str | Path) -> ComponentHealth:
         root = Path(queue_root)
         pending = root / "pending"

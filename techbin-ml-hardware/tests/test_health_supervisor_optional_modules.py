@@ -7,10 +7,12 @@ Run from project root:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import app.telemetry.supabase as supabase_module
 from app.sensors.health_supervisor import (
     CRITICAL,
     DISABLED,
@@ -107,6 +109,41 @@ def test_no_disturbance_is_not_health_fault() -> None:
     assert record.faultCode is None
 
 
+def test_valid_metal_detector_reading_is_healthy() -> None:
+    supervisor = HardwareHealthSupervisor(
+        metal_enabled=True,
+        thresholds=HealthThresholds(warning_failures=2, critical_failures=3, recovery_successes=2),
+    )
+    record = supervisor.observe_metal_detector(
+        {
+            "valid": True,
+            "metalDetected": True,
+            "faultCode": None,
+        }
+    )
+
+    assert record.status == HEALTHY
+    assert record.faultCode is None
+
+
+def test_invalid_metal_detector_reading_is_warning() -> None:
+    supervisor = HardwareHealthSupervisor(
+        metal_enabled=True,
+        thresholds=HealthThresholds(warning_failures=2, critical_failures=3, recovery_successes=2),
+    )
+    record = supervisor.observe_metal_detector(
+        {
+            "valid": False,
+            "metalDetected": None,
+            "faultCode": "metal_sensor_no_valid_samples",
+            "message": "No valid metal sensor samples.",
+        }
+    )
+
+    assert record.status == "warning"
+    assert record.faultCode == "metal_sensor_no_valid_samples"
+
+
 def test_camera_exception_maps_to_critical_without_raising() -> None:
     supervisor = HardwareHealthSupervisor()
     record = supervisor.observe_camera_exception(RuntimeError("camera failed"))
@@ -170,12 +207,23 @@ def test_voice_only_after_valid_confirmation() -> None:
 
 
 def test_detailed_health_payload_key_is_gated() -> None:
-    payload = build_bin_state_payload(
-        statistics={},
-        sensors={},
-        faults={},
-        detailed_health={"frontUltrasonic": {"status": "healthy"}},
+    original_settings = supabase_module.settings
+    supabase_module.settings = replace(
+        original_settings,
+        health=replace(
+            original_settings.health,
+            detailed_telemetry_enabled=False,
+        ),
     )
+    try:
+        payload = build_bin_state_payload(
+            statistics={},
+            sensors={},
+            faults={},
+            detailed_health={"frontUltrasonic": {"status": "healthy"}},
+        )
+    finally:
+        supabase_module.settings = original_settings
 
     assert "hardwareHealth" not in payload
 
@@ -209,6 +257,8 @@ def main() -> None:
     test_repeated_failure_targets_correct_sensor()
     test_valid_readings_recover_after_failure()
     test_no_disturbance_is_not_health_fault()
+    test_valid_metal_detector_reading_is_healthy()
+    test_invalid_metal_detector_reading_is_warning()
     test_camera_exception_maps_to_critical_without_raising()
     test_disabled_metal_and_voice_are_not_faults()
     test_metal_override_inactive_while_disabled()
